@@ -1,0 +1,10 @@
+services:
+  registry:
+    image: distribution/distribution
+    ports:
+      - "5000:5000"
+    volumes:
+      - "./registry.yaml:/etc/distribution/config.yml:ro"
+      - "./registry-data:/var/lib/registry:rw"
+  redis:
+    image: "redis:alpine"
