@@ -2,23 +2,28 @@ package scan
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"debug/elf"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 )
 
 type Result struct {
-	Digest     string      `json:"digest"`
-	Size       int         `json:"size"`
-	Linux      string      `json:"linux,omitempty"`
-	Alpine     *Alpine     `json:"alpine,omitempty"`
-	Debian     *Debian     `json:"debian,omitempty"`
-	SourceCode *SourceCode `json:"sourceCode,omitempty"`
-	FileCount  int         `json:"fileCount"`
-	DirCount   int         `json:"dirCount"`
-	Files      []string    `json:"files"`
+	Digest       string         `json:"digest"`
+	Size         int            `json:"size"`
+	Linux        string         `json:"linux,omitempty"`
+	Alpine       *Alpine        `json:"alpine,omitempty"`
+	Debian       *Debian        `json:"debian,omitempty"`
+	SourceCode   *SourceCode    `json:"sourceCode,omitempty"`
+	ELF          *ELF           `json:"elf,omitempty"`
+	FileCount    int            `json:"fileCount"`
+	DirCount     int            `json:"dirCount"`
+	Interpreters map[string]int `json:"interpreters,omitempty"`
+	Files        []string       `json:"files"`
 }
 
 type Alpine struct {
@@ -75,6 +80,10 @@ func (s SourceCode) String() string {
 	return strings.Join(parts, ", ")
 }
 
+type ELF struct {
+	Architectures map[string]int `json:"arch,omitempty"`
+}
+
 // func ScanLayers(registry Registry, manifest *Manifest) error {
 // 	for _, layer := range m.Layers {
 // 		// if layer.MediaType != "application/vnd.docker.image.rootfs.diff.tar.gzip" {
@@ -106,8 +115,10 @@ func ScanLayer(reader io.Reader, mediaType string, digest string) (*Result, erro
 	}
 
 	tr := tar.NewReader(uncompressReader)
-	var result Result
-	result.Digest = digest
+	result := Result{
+		Digest:       digest,
+		Interpreters: map[string]int{},
+	}
 	count := 0
 	for {
 		header, err := tr.Next()
@@ -134,8 +145,8 @@ func scanFile(result *Result, header *tar.Header, reader io.Reader) error {
 		result.FileCount++
 	}
 
-	switch header.Name {
-	case "etc/alpine-release":
+	switch {
+	case header.Name == "etc/alpine-release":
 		if result.Alpine == nil {
 			result.Alpine = &Alpine{}
 		}
@@ -144,16 +155,14 @@ func scanFile(result *Result, header *tar.Header, reader io.Reader) error {
 			return fmt.Errorf("failed to read %q: %w", header.Name, err)
 		}
 		result.Alpine.Release = strings.TrimSpace(string(b))
-	case "lib/apk/db/installed":
+	case header.Name == "lib/apk/db/installed":
 		if result.Alpine == nil {
 			result.Alpine = &Alpine{}
 		}
 		if err := scanAPKIndex(result.Alpine, reader); err != nil {
 			return fmt.Errorf("failed to scan APK index %q: %w", header.Name, err)
 		}
-	case "etc/os-release":
-		fallthrough
-	case "usr/lib/os-release":
+	case (header.Name == "etc/os-release") || (header.Name == "usr/lib/os-release"):
 		if header.FileInfo().Mode()&os.ModeSymlink != 0 {
 			break
 		}
@@ -169,25 +178,55 @@ func scanFile(result *Result, header *tar.Header, reader io.Reader) error {
 				break
 			}
 		}
-	case "var/lib/dpkg/status":
+	case header.Name == "var/lib/dpkg/status":
 		if result.Debian == nil {
 			result.Debian = &Debian{}
 		}
 		if err := scanDPKGStatus(result.Debian, reader); err != nil {
 			return fmt.Errorf("failed to scan DPKG status %q: %w", header.Name, err)
 		}
-	}
-
-	// images generally shouldn't contain source code
-	// notable exception is the Go toolchain itself
-	if strings.HasSuffix(header.Name, ".go") {
+	case strings.HasSuffix(header.Name, ".go"):
+		// images generally shouldn't contain source code
+		// notable exception is the Go toolchain itself
 		if result.SourceCode == nil {
 			result.SourceCode = &SourceCode{}
 		}
 		result.SourceCode.Go++
-	} else if strings.HasSuffix(header.Name, "/go.mod") {
+	case strings.HasSuffix(header.Name, "/go.mod"):
 		if err := readGoMod(result, reader); err != nil {
 			return fmt.Errorf("failed to read %q: %w", header.Name, err)
+		}
+	case header.FileInfo().Mode()&0111 != 0:
+		// executable
+		if header.Size > 10*1024*1024 {
+			// ignore large files
+			break
+		}
+		b, err := io.ReadAll(reader)
+		if err != nil {
+			return fmt.Errorf("failed to read %q: %w", header.Name, err)
+		}
+		// read first 512 bytes
+		if string(b[:2]) == "#!" {
+			// it's a script
+			parts := strings.SplitN(string(b), "\n", 2)
+			interpreter := strings.TrimSpace(strings.TrimPrefix(parts[0], "#!"))
+			result.Interpreters[interpreter]++
+		} else if bytes.Equal(b[0:4], []byte{0x7f, 0x45, 0x4c, 0x46}) {
+			// ELF
+			br := bytes.NewReader(b)
+			elfFile, err := elf.NewFile(br)
+			if err != nil {
+				log.Printf("Failed to read ELF file %q: %v", header.Name, err)
+				break
+			}
+			if result.ELF == nil {
+				result.ELF = &ELF{
+					Architectures: map[string]int{},
+				}
+			}
+			arch := strings.TrimPrefix(elfFile.Machine.String(), "EM_")
+			result.ELF.Architectures[arch]++
 		}
 	}
 

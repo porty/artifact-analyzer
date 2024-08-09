@@ -37,6 +37,12 @@ const layerTemplate = `Layer {{.Digest}}
     {{- end }}
   {{- end}}
 {{- end }}
+{{- if .ELF }}
+  ELF files:
+  {{- range $key, $value := .ELF.Architectures }}
+    {{$key}}: {{$value}}
+  {{- end }}
+{{- end }}
 {{- if .SourceCode }}
   Source code: {{.SourceCode}}
 {{- end }}
