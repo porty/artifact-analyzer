@@ -1,10 +1,14 @@
 package registry
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -48,4 +52,72 @@ func TestFileSystemRegistryBlob(t *testing.T) {
 			require.Nil(t, rc)
 		})
 	})
+}
+
+func TestFileSystemRegistryManifest(t *testing.T) {
+	r := FileSystemRegistry{
+		fs: os.DirFS("../registry-data"),
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		// distribution/distribution:latest
+		m, err := r.Manifest(ManifestPath{
+			Path: "distribution/distribution",
+			Tag:  "latest",
+		})
+
+		require.NoError(t, err)
+
+		require.Equal(t, 2, m.SchemaVersion)
+		require.Equal(t, "application/vnd.docker.distribution.manifest.v2+json", m.MediaType)
+	})
+	t.Run("not found", func(t *testing.T) {
+		// distribution/distribution:latest
+		m, err := r.Manifest(ManifestPath{
+			Path: "distribution/distribution",
+			Tag:  "hello",
+		})
+
+		require.EqualError(t, err, "failed to open manifest link for distribution/distribution:hello: open docker/registry/v2/repositories/distribution/distribution/_manifests/tags/hello/current/link: no such file or directory")
+		require.Nil(t, m)
+	})
+}
+
+func TestIterateThroughManifestLayers(t *testing.T) {
+	r := FileSystemRegistry{
+		fs: os.DirFS("../registry-data"),
+	}
+
+	// distribution/distribution:latest
+	m, err := r.Manifest(ManifestPath{
+		Path: "distribution/distribution",
+		Tag:  "latest",
+	})
+
+	require.NoError(t, err)
+
+	for _, layer := range m.Layers {
+		require.Equal(t, "application/vnd.docker.image.rootfs.diff.tar.gzip", layer.MediaType)
+		readGzipLayer(t, &r, layer)
+	}
+	t.Fail()
+}
+
+func readGzipLayer(t *testing.T, fsr *FileSystemRegistry, layer Layer) {
+	rc, err := fsr.Blob(strings.TrimPrefix(layer.Digest, "sha256:"))
+	require.NoError(t, err)
+	defer rc.Close()
+
+	gr, err := gzip.NewReader(rc)
+	require.NoError(t, err)
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		log.Printf("Name: %s", header.Name)
+	}
 }
