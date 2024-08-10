@@ -46,6 +46,15 @@ const layerTemplate = `Layer {{.Digest}}
 {{- if .SourceCode }}
   Source code: {{.SourceCode}}
 {{- end }}
+{{- if .GitRepos }}
+  Git repos ({{ len .GitRepos }})
+  {{- range $key, $value := .GitRepos }}
+    Root {{ .Root }}
+    {{- range $key, $value := .Remotes }}
+      Remote {{ $key }}: name = {{ .Name }}; URL = {{ .URL }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 `
 
 var layerCompiledTemplate = template.Must(template.New("layer").Funcs(template.FuncMap{

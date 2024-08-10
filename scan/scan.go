@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -23,6 +24,7 @@ type Result struct {
 	FileCount    int            `json:"fileCount"`
 	DirCount     int            `json:"dirCount"`
 	Interpreters map[string]int `json:"interpreters,omitempty"`
+	GitRepos     []GitRepo      `json:"gitRepos,omitempty"`
 	Files        []string       `json:"files"`
 }
 
@@ -82,6 +84,16 @@ func (s SourceCode) String() string {
 
 type ELF struct {
 	Architectures map[string]int `json:"arch,omitempty"`
+}
+
+type GitRepo struct {
+	Root    string          `json:"root"`
+	Remotes []GitRepoRemote `json:"remotes,omitempty"`
+}
+
+type GitRepoRemote struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // func ScanLayers(registry Registry, manifest *Manifest) error {
@@ -194,6 +206,10 @@ func scanFile(result *Result, header *tar.Header, reader io.Reader) error {
 		result.SourceCode.Go++
 	case strings.HasSuffix(header.Name, "/go.mod"):
 		if err := readGoMod(result, reader); err != nil {
+			return fmt.Errorf("failed to read %q: %w", header.Name, err)
+		}
+	case strings.HasSuffix(header.Name, ".git/config"):
+		if err := scanGitConfig(result, reader, header.Name); err != nil {
 			return fmt.Errorf("failed to read %q: %w", header.Name, err)
 		}
 	case header.FileInfo().Mode()&0111 != 0:
@@ -321,5 +337,43 @@ func scanDPKGStatus(debian *Debian, reader io.Reader) error {
 		}
 	}
 
+	return nil
+}
+
+var gitRemoteRegex = regexp.MustCompile(`^\[remote "([A-Za-z0-9]+)"]$`)
+var gitUrlRegex = regexp.MustCompile(`^\s*url = (.+)$`)
+
+func scanGitConfig(result *Result, reader io.Reader, filename string) error {
+	b, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read git config: %w", err)
+	}
+	lines := strings.Split(string(b), "\n")
+	var remotes []GitRepoRemote
+	remote := ""
+	for _, line := range lines {
+		if match := gitRemoteRegex.FindStringSubmatch(line); len(match) == 2 {
+			remote = match[1]
+			continue
+		}
+		if match := gitUrlRegex.FindStringSubmatch(line); len(match) == 2 {
+			url := match[1]
+			if remote != "" {
+				// str := fmt.Sprintf("repo=%q remote=%s url=%s", projectPath, remote, url)
+				// result.GitRepos = append(result.GitRepos, str)
+				remotes = append(remotes, GitRepoRemote{
+					Name: remote,
+					URL:  url,
+				})
+			}
+			remote = ""
+			continue
+		}
+	}
+	projectPath := strings.TrimSuffix(filename, "/.git/config")
+	result.GitRepos = append(result.GitRepos, GitRepo{
+		Root:    projectPath,
+		Remotes: remotes,
+	})
 	return nil
 }
