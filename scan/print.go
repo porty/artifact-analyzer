@@ -43,6 +43,12 @@ const layerTemplate = `Layer {{.Digest}}
     {{$key}}: {{$value}}
   {{- end }}
 {{- end }}
+{{- if .Macho }}
+  MACH-O files:
+  {{- range $key, $value := .Macho.Architectures }}
+    {{$key}}: {{$value}}
+  {{- end }}
+{{- end }}
 {{- if .SourceCode }}
   Source code: {{.SourceCode}}
 {{- end }}

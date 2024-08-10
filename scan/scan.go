@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"debug/elf"
+	"debug/macho"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,7 @@ type Result struct {
 	Debian       *Debian        `json:"debian,omitempty"`
 	SourceCode   *SourceCode    `json:"sourceCode,omitempty"`
 	ELF          *ELF           `json:"elf,omitempty"`
+	Macho        *Macho         `json:"macho,omitempty"`
 	FileCount    int            `json:"fileCount"`
 	DirCount     int            `json:"dirCount"`
 	Interpreters map[string]int `json:"interpreters,omitempty"`
@@ -94,6 +96,10 @@ type GitRepo struct {
 type GitRepoRemote struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+}
+
+type Macho struct {
+	Architectures map[string]int `json:"arch,omitempty"`
 }
 
 // func ScanLayers(registry Registry, manifest *Manifest) error {
@@ -243,6 +249,8 @@ func scanFile(result *Result, header *tar.Header, reader io.Reader) error {
 			}
 			arch := strings.TrimPrefix(elfFile.Machine.String(), "EM_")
 			result.ELF.Architectures[arch]++
+		} else if err := scanMacho(result, b); err == nil {
+			break
 		}
 	}
 
@@ -375,5 +383,24 @@ func scanGitConfig(result *Result, reader io.Reader, filename string) error {
 		Root:    projectPath,
 		Remotes: remotes,
 	})
+	return nil
+}
+
+func scanMacho(result *Result, b []byte) error {
+	reader := bytes.NewReader(b)
+	f, err := macho.NewFile(reader)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if result.Macho == nil {
+		result.Macho = &Macho{
+			Architectures: map[string]int{},
+		}
+	}
+
+	result.Macho.Architectures[strings.TrimPrefix(f.Cpu.String(), "Cpu")]++
+
 	return nil
 }
